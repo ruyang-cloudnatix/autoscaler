@@ -53,6 +53,7 @@ func NewAdmissionServer(podPreProcessor pod.PreProcessor,
 
 // RegisterResourceHandler allows to register a custom logic for handling given types of resources.
 func (s *AdmissionServer) RegisterResourceHandler(resourceHandler resource.Handler) {
+	klog.V(4).Infof("cloudnatix: registering resource handler: %v", resourceHandler.GroupResource())
 	s.resourceHandlers[resourceHandler.GroupResource()] = resourceHandler
 }
 
@@ -147,6 +148,7 @@ func (s *AdmissionServer) Serve(w http.ResponseWriter, r *http.Request) {
 		Response: reviewResponse,
 	}
 
+	klog.V(4).Infof("cloudnatix: admit response %v", reviewResponse)
 	resp, err := json.Marshal(ar)
 	if err != nil {
 		klog.Error(err)

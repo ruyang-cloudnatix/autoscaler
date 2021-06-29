@@ -20,6 +20,7 @@ import (
 	"math"
 
 	apiv1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/annotations"
 	vpa_api_util "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/vpa"
@@ -40,7 +41,7 @@ func NewProcessor() PriorityProcessor {
 type defaultPriorityProcessor struct {
 }
 
-func (*defaultPriorityProcessor) GetUpdatePriority(pod *apiv1.Pod, _ *vpa_types.VerticalPodAutoscaler,
+func (*defaultPriorityProcessor) GetUpdatePriority(pod *apiv1.Pod, vpa *vpa_types.VerticalPodAutoscaler,
 	recommendation *vpa_types.RecommendedPodResources) PodPriority {
 	outsideRecommendedRange := false
 	scaleUp := false
@@ -61,28 +62,26 @@ func (*defaultPriorityProcessor) GetUpdatePriority(pod *apiv1.Pod, _ *vpa_types.
 		if recommendedRequest == nil {
 			continue
 		}
-		for resourceName, recommended := range recommendedRequest.Target {
-			totalRecommendedPerResource[resourceName] += recommended.MilliValue()
-			lowerBound, hasLowerBound := recommendedRequest.LowerBound[resourceName]
-			upperBound, hasUpperBound := recommendedRequest.UpperBound[resourceName]
-			if request, hasRequest := podContainer.Resources.Requests[resourceName]; hasRequest {
-				totalRequestPerResource[resourceName] += request.MilliValue()
-				if recommended.MilliValue() > request.MilliValue() {
-					scaleUp = true
-				}
-				if (hasLowerBound && request.Cmp(lowerBound) < 0) ||
-					(hasUpperBound && request.Cmp(upperBound) > 0) {
-					outsideRecommendedRange = true
-				}
-			} else {
-				// Note: if the request is not specified, the container will use the
-				// namespace default request. Currently we ignore it and treat such
-				// containers as if they had 0 request. A more correct approach would
-				// be to always calculate the 'effective' request.
-				scaleUp = true
-				outsideRecommendedRange = true
+
+		// Check if the VPA object has Cloudnatix annotations.
+		if annotations.HasCloudnatixAnnotations(vpa.Annotations) {
+			// If the Cloudnatix annotations is not set to 'Auto',
+			// find the resource difference from the user-set values.
+			// Otherwise, if the annotation is set to `Auto`,
+			// perform the default VPA recommendation calculation.
+			if !annotations.IsAnnotationsAuto(vpa.Annotations) {
+				klog.Warning("Cloudnatix annotation detected with set resources setting")
+				outsideRecommendedRange, scaleUp = getCloudnatixAnnotatedRequestRangeAndScale(
+					vpa.Annotations, recommendedRequest, totalRecommendedPerResource, totalRequestPerResource, &podContainer)
+				continue
 			}
+			klog.Warning("Cloudnatix annotation detected with 'Auto' setting: %v",
+				annotations.GetResourceRequestAnnotations(vpa.Annotations))
 		}
+		klog.Warning("get Recommended Request Range And Scale")
+		outsideRecommendedRange, scaleUp = getRecommendedRequestRangeAndScale(
+			recommendedRequest, totalRecommendedPerResource, totalRequestPerResource, &podContainer)
+
 	}
 	resourceDiff := 0.0
 	for resource, totalRecommended := range totalRecommendedPerResource {
@@ -94,4 +93,92 @@ func (*defaultPriorityProcessor) GetUpdatePriority(pod *apiv1.Pod, _ *vpa_types.
 		ScaleUp:                 scaleUp,
 		ResourceDiff:            resourceDiff,
 	}
+}
+
+// getRecommendedRequestRangeAndScale returns the bools `outsideRecommendedRange`
+// and `scaleUp` from the Recommendation Requests provided by the VPA.
+func getRecommendedRequestRangeAndScale(
+	recommendedRequest *vpa_types.RecommendedContainerResources,
+	totalRecommendedPerResource map[apiv1.ResourceName]int64,
+	totalRequestPerResource map[apiv1.ResourceName]int64,
+	podContainer *apiv1.Container,
+) (bool, bool) {
+	outsideRecommendedRange := false
+	scaleUp := false
+	for resourceName, recommended := range recommendedRequest.Target {
+		totalRecommendedPerResource[resourceName] += recommended.MilliValue()
+		lowerBound, hasLowerBound := recommendedRequest.LowerBound[resourceName]
+		upperBound, hasUpperBound := recommendedRequest.UpperBound[resourceName]
+		if request, hasRequest := podContainer.Resources.Requests[resourceName]; hasRequest {
+			totalRequestPerResource[resourceName] += request.MilliValue()
+			if recommended.MilliValue() > request.MilliValue() {
+				scaleUp = true
+			}
+			if (hasLowerBound && request.Cmp(lowerBound) < 0) ||
+				(hasUpperBound && request.Cmp(upperBound) > 0) {
+				outsideRecommendedRange = true
+			}
+		} else {
+			// Note: if the request is not specified, the container will use the
+			// namespace default request. Currently we ignore it and treat such
+			// containers as if they had 0 request. A more correct approach would
+			// be to always calculate the 'effective' request.
+			scaleUp = true
+			outsideRecommendedRange = true
+		}
+	}
+	return outsideRecommendedRange, scaleUp
+}
+
+// getCloudnatixAnnotatedRequestRangeAndScale returns the bools `outsideRecommendedRange`
+// and `scaleUp` from the Cloudnatix Annotations in the VPA struct.
+// This assumes that the Cloudnatix annotated values aren't set to 'Auto';
+func getCloudnatixAnnotatedRequestRangeAndScale(
+	vpaAnnotations map[string]string,
+	recommendedRequest *vpa_types.RecommendedContainerResources,
+	totalAnnotatedPerResource map[apiv1.ResourceName]int64,
+	totalRequestPerResource map[apiv1.ResourceName]int64,
+	podContainer *apiv1.Container,
+) (bool, bool) {
+	outsideRecommendedRange := false
+	scaleUp := false
+
+	annotatedRequestTarget := annotations.GetResourceRequestAnnotations(vpaAnnotations)
+
+	for resourceName, annotated := range annotatedRequestTarget {
+		newValue := resource.MustParse(annotated)
+		totalAnnotatedPerResource[resourceName] += newValue.MilliValue()
+
+		if request, hasRequest := podContainer.Resources.Requests[resourceName]; hasRequest {
+			totalRequestPerResource[resourceName] += request.MilliValue()
+			if newValue.MilliValue() > request.MilliValue() {
+				scaleUp = true
+			}
+
+			// If the VPA was previously annotated, then use those values instead.
+			if hasRequest {
+				if newValue.MilliValue() != request.MilliValue() {
+					klog.Warningf("cloudnatix: new value %s is different than old value %s", &newValue, &request)
+					outsideRecommendedRange = true
+				}
+				continue
+			}
+
+			lowerBound, hasLowerBound := recommendedRequest.LowerBound[resourceName]
+			upperBound, hasUpperBound := recommendedRequest.UpperBound[resourceName]
+			if (hasLowerBound && request.Cmp(lowerBound) < 0) ||
+				(hasUpperBound && request.Cmp(upperBound) > 0) {
+				outsideRecommendedRange = true
+			}
+
+		} else {
+			// Note: if the request is not specified, the container will use the
+			// namespace default request. Currently we ignore it and treat such
+			// containers as if they had 0 request. A more correct approach would
+			// be to always calculate the 'effective' request.
+			scaleUp = true
+			outsideRecommendedRange = true
+		}
+	}
+	return outsideRecommendedRange, scaleUp
 }

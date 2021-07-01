@@ -32,7 +32,6 @@ import (
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/target"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/updater/eviction"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/updater/priority"
-	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/annotations"
 	metrics_updater "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics/updater"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/status"
 	vpa_api_util "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/vpa"
@@ -144,11 +143,6 @@ func (u *updater) RunOnce(ctx context.Context) {
 			continue
 		}
 
-		if !annotations.HasCloudnatixAnnotations(vpa.Annotations) {
-			klog.Infof("skipping VPA object %s because it doesn't have Cloudnatix annotations: %v", vpa.Name, vpa.Annotations)
-			continue
-		}
-
 		vpas = append(vpas, &vpa_api_util.VpaWithSelector{
 			Vpa:      vpa,
 			Selector: selector,
@@ -209,7 +203,6 @@ func (u *updater) RunOnce(ctx context.Context) {
 		withEvictable := false
 		withEvicted := false
 		for _, pod := range podsForUpdate {
-			klog.Warningf("cloudnatix: evicting pod %v", pod.Name)
 			withEvictable = true
 			if !evictionLimiter.CanEvict(pod) {
 				continue

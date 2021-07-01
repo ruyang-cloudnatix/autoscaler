@@ -70,15 +70,13 @@ func (*defaultPriorityProcessor) GetUpdatePriority(pod *apiv1.Pod, vpa *vpa_type
 			// Otherwise, if the annotation is set to `Auto`,
 			// perform the default VPA recommendation calculation.
 			if !annotations.IsAnnotationsAuto(vpa.Annotations) {
-				klog.Warning("Cloudnatix annotation detected with set resources setting")
+				klog.V(2).Infof("Cloudnatix annotation detected with set resources setting")
 				outsideRecommendedRange, scaleUp = getCloudnatixAnnotatedRequestRangeAndScale(
 					vpa.Annotations, recommendedRequest, totalRecommendedPerResource, totalRequestPerResource, &podContainer)
 				continue
 			}
-			klog.Warning("Cloudnatix annotation detected with 'Auto' setting: %v",
-				annotations.GetResourceRequestAnnotations(vpa.Annotations))
+			klog.V(2).Infof("Cloudnatix annotation detected with 'Auto' setting")
 		}
-		klog.Warning("get Recommended Request Range And Scale")
 		outsideRecommendedRange, scaleUp = getRecommendedRequestRangeAndScale(
 			recommendedRequest, totalRecommendedPerResource, totalRequestPerResource, &podContainer)
 
@@ -158,7 +156,7 @@ func getCloudnatixAnnotatedRequestRangeAndScale(
 			// If the VPA was previously annotated, then use those values instead.
 			if hasRequest {
 				if newValue.MilliValue() != request.MilliValue() {
-					klog.Warningf("cloudnatix: new value %s is different than old value %s", &newValue, &request)
+					klog.V(2).Infof("cloudnatix: new value %s is different than old value %s", &newValue, &request)
 					outsideRecommendedRange = true
 				}
 				continue
@@ -170,7 +168,6 @@ func getCloudnatixAnnotatedRequestRangeAndScale(
 				(hasUpperBound && request.Cmp(upperBound) > 0) {
 				outsideRecommendedRange = true
 			}
-
 		} else {
 			// Note: if the request is not specified, the container will use the
 			// namespace default request. Currently we ignore it and treat such

@@ -29,7 +29,6 @@ import (
 // NewCappingRecommendationProcessor constructs new RecommendationsProcessor that adjusts recommendation
 // for given pod to obey VPA resources policy and container limits
 func NewCappingRecommendationProcessor(limitsRangeCalculator limitrange.LimitRangeCalculator) RecommendationProcessor {
-	klog.V(4).Infof("cloudnatix: creating capping recommendation processor")
 	return &cappingRecommendationProcessor{limitsRangeCalculator: limitsRangeCalculator}
 }
 
@@ -75,7 +74,6 @@ func (c *cappingRecommendationProcessor) Apply(
 	}
 	for _, containerRecommendation := range limitAdjustedRecommendation {
 		container := getContainer(containerRecommendation.ContainerName, pod)
-		klog.V(4).Infof("cloudnatix: container recommendations: %v", containerRecommendation)
 		if container == nil {
 			klog.V(2).Infof("no matching Container found for recommendation %s", containerRecommendation.ContainerName)
 			continue

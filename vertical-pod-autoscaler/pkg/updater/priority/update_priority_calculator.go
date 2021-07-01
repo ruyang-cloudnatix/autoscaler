@@ -116,7 +116,7 @@ func (calc *UpdatePriorityCalculator) AddPod(pod *apiv1.Pod, now time.Time) {
 	}
 
 	if calc.shouldUpdatePod(pod, updatePriority, now, quickOOM) {
-		klog.Warningf("pod accepted for update %v/%v with priority %v", pod.Namespace, pod.Name, updatePriority.ResourceDiff)
+		klog.V(2).Infof("pod accepted for update %v/%v with priority %v", pod.Namespace, pod.Name, updatePriority.ResourceDiff)
 		calc.pods = append(calc.pods, prioritizedPod{
 			pod:            pod,
 			priority:       updatePriority,

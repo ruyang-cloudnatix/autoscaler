@@ -20,7 +20,9 @@ import (
 	"fmt"
 
 	core "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	anno "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/annotations"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/limitrange"
 	vpa_api_util "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/vpa"
 	"k8s.io/klog"
@@ -93,8 +95,13 @@ func (p *recommendationProvider) GetContainersResourcesForPod(pod *core.Pod, vpa
 	recommendedPodResources := &vpa_types.RecommendedPodResources{}
 
 	if vpa.Status.Recommendation != nil {
+		copiedVPARec := vpa.Status.Recommendation.DeepCopy()
+		if anno.HasRecommendationAnnotations(vpa.Annotations) {
+			recommendedResourceRequestAmend(copiedVPARec, pod, vpa.Annotations)
+		}
+
 		var err error
-		recommendedPodResources, annotations, err = p.recommendationProcessor.Apply(vpa.Status.Recommendation, vpa.Spec.ResourcePolicy, vpa.Status.Conditions, pod)
+		recommendedPodResources, annotations, err = p.recommendationProcessor.Apply(copiedVPARec, vpa.Spec.ResourcePolicy, vpa.Status.Conditions, pod)
 		if err != nil {
 			klog.V(2).Infof("cannot process recommendation for pod %s", pod.Name)
 			return nil, annotations, err
@@ -110,4 +117,43 @@ func (p *recommendationProvider) GetContainersResourcesForPod(pod *core.Pod, vpa
 	}
 	containerResources := GetContainersResources(pod, resourcePolicy, *recommendedPodResources, containerLimitRange, false, annotations)
 	return containerResources, annotations, nil
+}
+
+// recommendedResourceRequestAmend amends the VPA recommendation if recommended resource annotations are set.
+func recommendedResourceRequestAmend(vpaRecommendation *vpa_types.RecommendedPodResources, pod *core.Pod, annotations map[string]string) {
+	recResourceTargets := anno.GetResourceRequestAnnotations(annotations)
+
+	for _, container := range vpaRecommendation.ContainerRecommendations {
+		originalContainerRequests := findOriginalContainerRequest(pod, container.ContainerName)
+		for resourceName, origValue := range container.Target {
+			// If recommended resource annotation is set, use the requested value.
+			if value, ok := recResourceTargets[container.ContainerName][resourceName]; ok {
+				klog.V(4).Infof("updating %s for %s to annotated request %s from %d",
+					resourceName, container.ContainerName, value, origValue.Value())
+				container.Target[resourceName] = resource.MustParse(value)
+			} else {
+				klog.V(4).Infof("resource annotation '%s' not found for %s", resourceName, container.ContainerName)
+				// If the resource is not set, use the original resource request or omit.
+				if originalValue, found := originalContainerRequests[resourceName]; found {
+					klog.V(4).Infof("original resource %s request %d found for %s", resourceName, originalValue.Value(), container.ContainerName)
+					container.Target[resourceName] = originalValue
+				} else {
+					klog.V(4).Infof("deleting unset resource %s for %s", resourceName, container.ContainerName)
+					// Delete the unset resource.
+					delete(container.Target, resourceName)
+				}
+			}
+		}
+	}
+}
+
+// Note: This doesn't capture the current VPA resource request (if applied). It only captures
+// what the resource requests were for the Pod in the initial point of deployment.
+func findOriginalContainerRequest(pod *core.Pod, containerName string) core.ResourceList {
+	for _, container := range pod.Spec.Containers {
+		if container.Name == containerName {
+			return container.Resources.Requests
+		}
+	}
+	return nil
 }

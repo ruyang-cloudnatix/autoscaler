@@ -115,36 +115,60 @@ func (calc *UpdatePriorityCalculator) AddPod(pod *apiv1.Pod, now time.Time) {
 		}
 	}
 
-	// The update is allowed in following cases:
-	// - the request is outside the recommended range for some container.
-	// - the pod lives for at least 24h and the resource diff is >= MinChangePriority.
-	// - a vpa scaled container OOMed in less than evictAfterOOMThreshold.
+	if calc.shouldUpdatePod(pod, updatePriority, now, quickOOM) {
+		klog.V(2).Infof("pod accepted for update %v/%v with priority %v", pod.Namespace, pod.Name, updatePriority.ResourceDiff)
+		calc.pods = append(calc.pods, prioritizedPod{
+			pod:            pod,
+			priority:       updatePriority,
+			recommendation: processedRecommendation})
+	}
+}
+
+func (calc *UpdatePriorityCalculator) shouldUpdatePod(pod *apiv1.Pod, updatePriority PodPriority, now time.Time, quickOOM bool) bool {
+	if annotations.HasRecommendationAnnotations(calc.vpa.Annotations) {
+		return calc.shouldUpdatePodRecommendationAnnotated(pod, updatePriority)
+	}
+	return calc.shouldUpdatePodDefault(pod, updatePriority, now, quickOOM)
+}
+
+// shouldUpdatePodRecommendationAnnotated determines if the Pod should be updated in following cases:
+// - recommendation annotated resource requests that differ from the original resource requests
+func (calc *UpdatePriorityCalculator) shouldUpdatePodRecommendationAnnotated(pod *apiv1.Pod, updatePriority PodPriority) bool {
+	if updatePriority.ResourceDiff == 0 {
+		klog.V(2).Infof("not updating pod %v/%v, resource diff unchanged: %v", pod.Namespace, pod.Name, updatePriority.ResourceDiff)
+		return false
+	}
+	return true
+}
+
+// The update is allowed in following cases:
+// - the request is outside the recommended range for some container.
+// - the pod lives for at least 24h and the resource diff is >= MinChangePriority.
+// - a vpa scaled container OOMed in less than evictAfterOOMThreshold.
+func (calc *UpdatePriorityCalculator) shouldUpdatePodDefault(pod *apiv1.Pod, updatePriority PodPriority, now time.Time, quickOOM bool) bool {
 	if !updatePriority.OutsideRecommendedRange && !quickOOM {
 		if pod.Status.StartTime == nil {
 			// TODO: Set proper condition on the VPA.
 			klog.V(2).Infof("not updating pod %v/%v, missing field pod.Status.StartTime", pod.Namespace, pod.Name)
-			return
+			return false
 		}
 		if now.Before(pod.Status.StartTime.Add(*podLifetimeUpdateThreshold)) {
 			klog.V(2).Infof("not updating a short-lived pod %v/%v, request within recommended range", pod.Namespace, pod.Name)
-			return
+			return false
 		}
 		if updatePriority.ResourceDiff < calc.config.MinChangePriority {
 			klog.V(2).Infof("not updating pod %v/%v, resource diff too low: %v", pod.Namespace, pod.Name, updatePriority)
-			return
+			return false
 		}
 	}
 
 	// If the pod has quick OOMed then evict only if the resources will change
 	if quickOOM && updatePriority.ResourceDiff == 0 {
 		klog.V(2).Infof("not updating pod %v/%v because resource would not change", pod.Namespace, pod.Name)
-		return
+		return false
 	}
-	klog.V(2).Infof("pod accepted for update %v/%v with priority %v", pod.Namespace, pod.Name, updatePriority.ResourceDiff)
-	calc.pods = append(calc.pods, prioritizedPod{
-		pod:            pod,
-		priority:       updatePriority,
-		recommendation: processedRecommendation})
+
+	return true
 }
 
 // GetSortedPods returns a list of pods ordered by update priority (highest update priority first)

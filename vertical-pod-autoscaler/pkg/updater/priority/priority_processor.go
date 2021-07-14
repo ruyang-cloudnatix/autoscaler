@@ -20,6 +20,7 @@ import (
 	"math"
 
 	apiv1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/annotations"
 	vpa_api_util "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/vpa"
@@ -40,7 +41,7 @@ func NewProcessor() PriorityProcessor {
 type defaultPriorityProcessor struct {
 }
 
-func (*defaultPriorityProcessor) GetUpdatePriority(pod *apiv1.Pod, _ *vpa_types.VerticalPodAutoscaler,
+func (*defaultPriorityProcessor) GetUpdatePriority(pod *apiv1.Pod, vpa *vpa_types.VerticalPodAutoscaler,
 	recommendation *vpa_types.RecommendedPodResources) PodPriority {
 	outsideRecommendedRange := false
 	scaleUp := false
@@ -59,6 +60,12 @@ func (*defaultPriorityProcessor) GetUpdatePriority(pod *apiv1.Pod, _ *vpa_types.
 		}
 		recommendedRequest := vpa_api_util.GetRecommendationForContainer(podContainer.Name, recommendation)
 		if recommendedRequest == nil {
+			continue
+		}
+		// Check if the VPA object has recommendation annotations.
+		if annotations.HasRecommendationAnnotations(vpa.Annotations) {
+			outsideRecommendedRange, scaleUp = getRecommendationAnnotatedRequestRangeAndScale(
+				vpa.Annotations, &podContainer, totalRecommendedPerResource, totalRequestPerResource)
 			continue
 		}
 		for resourceName, recommended := range recommendedRequest.Target {
@@ -94,4 +101,40 @@ func (*defaultPriorityProcessor) GetUpdatePriority(pod *apiv1.Pod, _ *vpa_types.
 		ScaleUp:                 scaleUp,
 		ResourceDiff:            resourceDiff,
 	}
+}
+
+// getRecommendationAnnotatedRequestRangeAndScale returns the bools `outsideRecommendedRange`
+// and `scaleUp` from the recommendation annotations in the VPA struct.
+func getRecommendationAnnotatedRequestRangeAndScale(
+	vpaAnnotations map[string]string,
+	podContainer *apiv1.Container,
+	totalAnnotatedPerResource map[apiv1.ResourceName]int64,
+	totalRequestPerResource map[apiv1.ResourceName]int64,
+) (outsideRecommendedRange bool, scaleUp bool) {
+	annotatedRequestTarget := annotations.GetResourceRequestAnnotations(vpaAnnotations)
+	resourceRequests, ok := annotatedRequestTarget[podContainer.Name]
+	if !ok {
+		return false, false
+	}
+
+	for resourceName, annotatedValue := range resourceRequests {
+		newValue := resource.MustParse(annotatedValue)
+		totalAnnotatedPerResource[resourceName] += newValue.MilliValue()
+
+		if request, hasRequest := podContainer.Resources.Requests[resourceName]; hasRequest {
+			totalRequestPerResource[resourceName] += request.MilliValue()
+			if newValue.MilliValue() > request.MilliValue() {
+				scaleUp = true
+			}
+		} else {
+			// Note: if the request is not specified, the container will use the
+			// namespace default request. Currently we ignore it and treat such
+			// containers as if they had 0 request. A more correct approach would
+			// be to always calculate the 'effective' request.
+			scaleUp = true
+			outsideRecommendedRange = true
+		}
+	}
+
+	return outsideRecommendedRange, scaleUp
 }

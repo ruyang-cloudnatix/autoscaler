@@ -1,7 +1,7 @@
 all: build
 
-TAG?=dev
-REGISTRY?=staging-k8s.gcr.io
+TAG?=cnatix-dev
+REGISTRY?=803339316953.dkr.ecr.us-west-2.amazonaws.com/cloudnatix
 FLAGS=
 TEST_ENVVAR=LD_FLAGS=-s GO111MODULE=on
 ENVVAR=CGO_ENABLED=0 $(TEST_ENVVAR)
@@ -20,7 +20,7 @@ build-binary: clean
 	$(ENVVAR) GOOS=$(GOOS) go build -o ${COMPONENT}
 
 .PHONY: build-binary-with-vendor
-build-binary-with-vendor: $(addprefix build-binary-with-vendor-,$(ALL_ARCHITECTURES)) clean
+build-binary-with-vendor: $(addprefix build-binary-with-vendor-,$(ALL_ARCHITECTURES))
 
 .PHONY: build-binary-with-vendor-*
 build-binary-with-vendor-%:
@@ -28,6 +28,16 @@ build-binary-with-vendor-%:
 
 test-unit: clean build
 	$(TEST_ENVVAR) go test --test.short -race ./... $(FLAGS)
+
+# Logs into the CloudNatix container registry.
+# NOTE: this command relies on having an appropriate AWS profile set.
+.PHONY: docker-login
+docker-login:
+	@aws --region us-west-2 ecr get-login-password \
+	  | docker login \
+	      --username AWS \
+	      --password-stdin \
+	      $(REGISTRY)
 
 .PHONY: docker-build
 docker-build: $(addprefix docker-build-,$(ALL_ARCHITECTURES))

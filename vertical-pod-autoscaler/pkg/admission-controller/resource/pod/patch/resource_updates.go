@@ -48,7 +48,6 @@ func NewResourceUpdatesCalculator(recommendationProvider recommendation.Provider
 
 func (c *resourcesUpdatesPatchCalculator) CalculatePatches(pod *core.Pod, vpa *vpa_types.VerticalPodAutoscaler) ([]resource_admission.PatchRecord, error) {
 	result := []resource_admission.PatchRecord{}
-
 	containersResources, annotationsPerContainer, err := c.recommendationProvider.GetContainersResourcesForPod(pod, vpa)
 	if err != nil {
 		return []resource_admission.PatchRecord{}, fmt.Errorf("Failed to calculate resource patch for pod %v/%v: %v", pod.Namespace, pod.Name, err)

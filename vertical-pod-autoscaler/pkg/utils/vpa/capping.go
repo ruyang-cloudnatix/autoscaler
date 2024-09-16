@@ -74,7 +74,6 @@ func (c *cappingRecommendationProcessor) Apply(
 	}
 	for _, containerRecommendation := range limitAdjustedRecommendation {
 		container := getContainer(containerRecommendation.ContainerName, pod)
-
 		if container == nil {
 			klog.V(2).Infof("no matching Container found for recommendation %s", containerRecommendation.ContainerName)
 			continue

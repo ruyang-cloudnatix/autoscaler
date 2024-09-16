@@ -20,7 +20,9 @@ import (
 	"fmt"
 
 	core "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	anno "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/annotations"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/limitrange"
 	vpa_api_util "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/vpa"
 	"k8s.io/klog"
@@ -80,6 +82,28 @@ func GetContainersResources(pod *core.Pod, vpaResourcePolicy *vpa_types.PodResou
 	return resources
 }
 
+// cloudnatixResourceRequestOverride overrides the VPA recommendation if Cloudnatix Resource annotations are set.
+func cloudnatixResourceRequestOverride(vpaRecommendation *vpa_types.RecommendedPodResources, annotations map[string]string) *vpa_types.RecommendedPodResources {
+	// Cloudnatix annotation values are set to `Auto`, continue with default behaviour.
+	if anno.IsAnnotationsAuto(annotations) {
+		klog.V(4).Infof("cloudnatix: `auto` setting detected, continuing without change ...")
+		return vpaRecommendation
+	}
+	cnatixResourceTargets := anno.GetResourceRequestAnnotations(annotations)
+	if len(vpaRecommendation.ContainerRecommendations) != 1 {
+		klog.V(4).Infof("cloudnatix: expected only one container but got %d", len(vpaRecommendation.ContainerRecommendations))
+		return nil
+	}
+	for resourceName := range vpaRecommendation.ContainerRecommendations[0].Target {
+		if value, ok := cnatixResourceTargets[resourceName]; ok {
+			klog.V(4).Infof("cloudnatix: updating %s to annotated request %s from %s",
+				resourceName, value, vpaRecommendation.ContainerRecommendations[0].Target[resourceName])
+			vpaRecommendation.ContainerRecommendations[0].Target[resourceName] = resource.MustParse(value)
+		}
+	}
+	return vpaRecommendation
+}
+
 // GetContainersResourcesForPod returns recommended request for a given pod and associated annotations.
 // The returned slice corresponds 1-1 to containers in the Pod.
 func (p *recommendationProvider) GetContainersResourcesForPod(pod *core.Pod, vpa *vpa_types.VerticalPodAutoscaler) ([]vpa_api_util.ContainerResources, vpa_api_util.ContainerToAnnotationsMap, error) {
@@ -92,9 +116,12 @@ func (p *recommendationProvider) GetContainersResourcesForPod(pod *core.Pod, vpa
 	var annotations vpa_api_util.ContainerToAnnotationsMap
 	recommendedPodResources := &vpa_types.RecommendedPodResources{}
 
+	if anno.HasCloudnatixAnnotations(vpa.Annotations) {
+		recommendedPodResources = cloudnatixResourceRequestOverride(vpa.Status.Recommendation, vpa.Annotations)
+	}
 	if vpa.Status.Recommendation != nil {
 		var err error
-		recommendedPodResources, annotations, err = p.recommendationProcessor.Apply(vpa.Status.Recommendation, vpa.Spec.ResourcePolicy, vpa.Status.Conditions, pod)
+		recommendedPodResources, annotations, err = p.recommendationProcessor.Apply(recommendedPodResources, vpa.Spec.ResourcePolicy, vpa.Status.Conditions, pod)
 		if err != nil {
 			klog.V(2).Infof("cannot process recommendation for pod %s", pod.Name)
 			return nil, annotations, err
